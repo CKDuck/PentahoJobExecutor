@@ -1,7 +1,17 @@
 package com.rdml.pentaho;
 
+import java.awt.SystemColor;
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
@@ -11,8 +21,13 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import org.omg.CORBA.SystemException;
+
 import com.rdml.pentaho.db.PDIManager;
+import com.rdml.pentaho.util.ILogDevice;
 import com.rdml.pentaho.util.LogDevice;
+import com.rdml.pentaho.util.PentahoLogDevice;
+import com.rdml.pentaho.util.PropertyLoader;
 import com.rdml.pentaho.util.SysCommandExecutor;
 
 /**
@@ -48,22 +63,34 @@ public class PentahoJobExecutor {
 	 * args[9] log file location
 	 * args[10] DAY / HOUR to decide what level the log time will be generated
 	 * args[11] AUTO / TODAY,YESTERDAY to decide the mode of log time generation whether its go to find from records or run for today or yesterday all the missing hours \n
-	 * args[12] (Optional) yyyy-MM-dd Give the date of which application will go to check in the record table, \n 
+	 * args[12] (Optional) yyyy-MM-dd Give the date yyyy-MM-dd of which application will go to check in the record table, \n 
 	 * 			if DAY is used and AUTO: generate LOG_TIME for that day yyyy_MM_dd\n
 	 *			if DAY is used and TODAY, YESTERDAY: doesn«t matter whether given date is today or not, use today yyyy_MM_dd \n
 	 *			if HOUR is used and AUTO: generate LOG_TIME for that day that missing or unsuccessful records, call the command for each identified hours that day yyyy_MM_dd_HH \n
-	 *			if HOUR is used and TODAY, YESTERDAY: generaete LOG_TIME for today«s or yesterday«s missing records or unsuccessful records, call the command for each identified hours yyyy_MM_dd_HH \n   			 
+	 *			if HOUR is used and TODAY, YESTERDAY: generaete LOG_TIME for today«s or yesterday«s missing records or unsuccessful records, call the command for each identified hours yyyy_MM_dd_HH \n
+	 * args[13] (Optional, default PROD) MODE to decide whether its PROD or TEST, which will change the behavior of PDI loader, such as log file path, steps execution 
+	 * args[14] (Optional, default /var/log/cdr) the log files root folder, under it should contain billinggate, download, wowza, xss, xdm log folders   			 
 	 * @param args
 	 */
 	public static void main(String[] args) {
 
 		if (args.length >= 12) {
 
+			String logFilePath = args[9];
 			String generateLevel = args[10];
 			String generateMode = args[11];
 			String specifyDateStr = null;
+			String mode = null;
+			String logRootPath = null;
+			
 			if (args.length >= 13) {
 				specifyDateStr = args[12];
+			}
+			if (args.length >= 14) {
+				mode = args[13];
+			}
+			if (args.length >= 15) {
+				logRootPath = args[14];
 			}
 
 			StringBuilder commandBuilder = new StringBuilder();
@@ -75,8 +102,8 @@ public class PentahoJobExecutor {
 			.append("-job:").append(args[5]).append(" ")
 			.append("-maxloglines:").append(args[6]).append(" ")
 			.append("-maxlogtimeout:").append(args[7]).append(" ")
-			.append("-level:").append(args[8]).append(" ")
-			.append("-logfile:").append(args[9]).append(" ");
+			.append("-level:").append(args[8]).append(" ");
+			//.append("-logfile:").append(logFilePath).append(" "); // will use >> for output redirection instead
 
 			PDIManager pdiManager = null; 
 			Map<Date, String> logTimeCommands = new LinkedHashMap<Date, String> ();
@@ -247,8 +274,14 @@ public class PentahoJobExecutor {
 
 
 			SysCommandExecutor cmdExecutor = new SysCommandExecutor();
-			cmdExecutor.setOutputLogDevice(new LogDevice());
-			cmdExecutor.setErrorLogDevice(new LogDevice());
+			/*cmdExecutor.setOutputLogDevice(new LogDevice());
+			cmdExecutor.setErrorLogDevice(new LogDevice());*/
+			BufferedWriter out = null;
+			try {
+				out = attachLogDevice(cmdExecutor, logFilePath);
+			} catch (Exception e) {
+				System.out.println("Not able to assign LogDevice for CommandExecutor");
+			}
 
 			for (Date logTime : logTimeCommands.keySet()) {
 				String commandLine = logTimeCommands.get(logTime);
@@ -258,7 +291,15 @@ public class PentahoJobExecutor {
 				String success = "succeeded";
 				try {
 					startTime = new Date();
+					//commandLine = commandLine + " > " + logFilePath;
+					if (null != mode) {
+						commandLine = commandLine + " -param:MODE=" + mode;
+					}
+					if (null != logRootPath) {
+						commandLine = commandLine + " -param:LOG_ROOT_FOLDER=" + logRootPath;
+					}
 					System.out.println(commandLine);
+					
 					exitStatus = cmdExecutor.runCommand(commandLine);
 					endTime = new Date();
 					if (exitStatus != 0) {
@@ -280,7 +321,23 @@ public class PentahoJobExecutor {
 					}
 				}
 			}
+			// close the writer 
+			if (null != out) {
+				try {
+					out.close();
+				} catch (IOException e) {
+					System.out.println("Not able to close LogDevice stream");
+				}
+				out = null;
+			}
 
+			try {
+				String destLogPath = moveLogFile(logFilePath);
+				System.out.println("Log " + logFilePath + " has been copied to " + destLogPath);
+			} catch (Exception e) {
+				System.out.println("Not able to move the kitchen log file " + logFilePath + " " + e.getMessage());
+			}
+			
 		} else {
 			System.out.println("Arguments number not correct, need at least 12 arguments, \nargs 0-9 are for Pentaho Kitchen, 10-12 are for JobExecutor run behavior : ");
 			System.out.println("args[0] kitchen.sh location");
@@ -295,11 +352,13 @@ public class PentahoJobExecutor {
 			System.out.println("args[10] DAY / HOUR to decide what level the log time will be generated");
 			System.out.println("args[9] log file location");
 			System.out.println("args[11] AUTO / TODAY, YESTERDAY to decide the mode of log time generation whether its go to find from records or run for today/yesterday all the missing hours \n");
-			System.out.println("args[12] (Optional) Give the date of which application will go to check in the record table, \n" 
+			System.out.println("args[12] (Optional) Give the date yyyy-MM-dd of which application will go to check in the record table, \n" 
 					+ "\tif DAY is used and AUTO: generate LOG_TIME for that day yyyy_MM_dd\n"
 					+ "\tif DAY is used and TODAY, YESTERDAY: doesn«t matter whether given date is today/yesterday or not, use today yyyy_MM_dd \n"
 					+ "\tif HOUR is used and AUTO: generate LOG_TIME for that day that missing or unsuccessful records, call the command for each identified hours that day yyyy_MM_dd_HH \n"
-					+ "\tif HOUR is used and TODAY, YESTERDAY: generaete LOG_TIME for today«s/yesterday«s missing records or unsuccessful records, call the command for each identified hours yyyy_MM_dd_HH \n");   			 
+					+ "\tif HOUR is used and TODAY, YESTERDAY: generaete LOG_TIME for today«s/yesterday«s missing records or unsuccessful records, call the command for each identified hours yyyy_MM_dd_HH");
+			System.out.println("args[13] (Optional, default PROD) MODE to decide whether its PROD or TEST, which will change the behavior of PDI loader, such as log file path, steps execution");
+			System.out.println("args[14] (Optional, default /var/log/cdr) the log files root folder, under it should contain billinggate, download, wowza, xss, xdm log folders");
 		}
 	}
 
@@ -442,5 +501,43 @@ public class PentahoJobExecutor {
 		return cal.getTime();
 
 	}
+	
+	private static String moveLogFile(String sourceLogPath)  throws Exception{
+		String kitchenLogFolder = PropertyLoader.getString("kitchen.log.folder");
+		File source = new File(sourceLogPath);
+		String fileName = source.getName();
+		
+		Date timestamp = new Date();
+		DateFormat df = new SimpleDateFormat("yyyyMMddHHmmss");
+		File dest = new File(kitchenLogFolder + fileName + "_" + df.format(timestamp));
+		
+		InputStream in = new FileInputStream(source);
+		OutputStream out = new FileOutputStream(dest);
+		
+		byte[] buf = new byte[1024];
+		int len;
+		while((len = in.read(buf)) > 0) {
+			out.write(buf, 0, len);
+		}
+		
+		in.close();
+		out.close();
+		
+		source.deleteOnExit();
+		
+		return dest.getAbsolutePath();
+	}
+	
+	
+	private static BufferedWriter attachLogDevice(SysCommandExecutor cmdExecutor, String logFilePath) throws Exception {
+		FileWriter fw = new FileWriter(new File(logFilePath), true);
+		BufferedWriter out = new BufferedWriter(fw);
+		
+		cmdExecutor.setOutputLogDevice(new PentahoLogDevice(logFilePath, out));
+		cmdExecutor.setErrorLogDevice(new PentahoLogDevice(logFilePath, out));
+		
+		return out;
+	}
+	
 	
 }
