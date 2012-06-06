@@ -1,12 +1,10 @@
 package com.rdml.pentaho;
 
-import java.awt.SystemColor;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
@@ -21,11 +19,7 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import org.omg.CORBA.SystemException;
-
 import com.rdml.pentaho.db.PDIManager;
-import com.rdml.pentaho.util.ILogDevice;
-import com.rdml.pentaho.util.LogDevice;
 import com.rdml.pentaho.util.PentahoLogDevice;
 import com.rdml.pentaho.util.PropertyLoader;
 import com.rdml.pentaho.util.SysCommandExecutor;
