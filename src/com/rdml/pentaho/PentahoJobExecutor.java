@@ -17,6 +17,8 @@ import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 
 import com.rdml.pentaho.db.PDIManager;
@@ -43,6 +45,7 @@ public class PentahoJobExecutor {
 	private final static String MODE_AUTO = "AUTO";
 	private final static String MODE_TODAY = "TODAY";
 	private final static String MODE_YESTERDAY = "YESTERDAY";
+	private final static String MODE_ALL = "ALL";
 
 	/** args 0-9 are for Pentaho Kitchen, 10-12 are for JobExecutor run behavior
 	 * args[0] kitchen.sh location
@@ -56,7 +59,7 @@ public class PentahoJobExecutor {
 	 * args[8] log level
 	 * args[9] log file location
 	 * args[10] DAY / HOUR to decide what level the log time will be generated
-	 * args[11] AUTO / TODAY,YESTERDAY to decide the mode of log time generation whether its go to find from records or run for today or yesterday all the missing hours \n
+	 * args[11] AUTO / TODAY,YESTERDAY / ALL to decide the mode of log time generation whether its go to find from records or run for today or yesterday all the missing hours; ALL will show all the hours if specified date otherwise will use current date's hours until now \n
 	 * args[12] (Optional) yyyy-MM-dd Give the date yyyy-MM-dd of which application will go to check in the record table, \n 
 	 * 			if DAY is used and AUTO: generate LOG_TIME for that day yyyy_MM_dd\n
 	 *			if DAY is used and TODAY, YESTERDAY: doesn«t matter whether given date is today or not, use today yyyy_MM_dd \n
@@ -200,7 +203,53 @@ public class PentahoJobExecutor {
 						String commandLine = commandBuilder.toString();
 						logTimeCommands.put(latestLogTime, commandLine);
 					}*/
-				} 
+				} else if (generateMode.equalsIgnoreCase(MODE_ALL)) {
+					if (null != specifyDateStr && "" != specifyDateStr) {
+						// HOUR,ALL, with given date : get that date«s all hours
+						Date specifyDate;
+						try {
+							specifyDate = dateFormat.parse(specifyDateStr);
+							Collection<Date> allLogTimes = getAllHOURLogTime(pdiManager, specifyDate);
+							for (Date logTime : allLogTimes) {
+								if (null != logTime) {
+									String logYear = yearDF.format(logTime);
+									String logMonth = monthDF.format(logTime);
+									String logDay = dayDF.format(logTime);
+									String logHour = hourDF.format(logTime); 
+									String commandLine = 
+											commandBuilder.toString() + 
+											" -param:LOG_YEAR=" + logYear +
+											" -param:LOG_MONTH=" + logMonth +
+											" -param:LOG_DAY=" + logDay +
+											" -param:LOG_HOUR=" + logHour;
+									logTimeCommands.put(logTime, commandLine);
+								}
+							}
+						} catch (ParseException e) {
+							System.out.println("Error when generate log times and command for HOUR, ALL, " + specifyDateStr);
+							e.printStackTrace();
+						}
+					} else {
+						// HOUR,ALL : get today's all past hours
+						Date today = new Date();
+						Collection<Date> allLogTimes = getAllHOURLogTime(pdiManager, today);
+						for (Date logTime : allLogTimes) {
+							if (null != logTime) {
+								String logYear = yearDF.format(logTime);
+								String logMonth = monthDF.format(logTime);
+								String logDay = dayDF.format(logTime);
+								String logHour = hourDF.format(logTime); 
+								String commandLine = 
+										commandBuilder.toString() + 
+										" -param:LOG_YEAR=" + logYear +
+										" -param:LOG_MONTH=" + logMonth +
+										" -param:LOG_DAY=" + logDay +
+										" -param:LOG_HOUR=" + logHour;
+								logTimeCommands.put(logTime, commandLine);
+							}
+						}
+					}
+				}
 			} else if (generateLevel.equalsIgnoreCase(LEVEL_DAY)) {
 				if (generateMode.equalsIgnoreCase(MODE_AUTO)) {
 					if (null != specifyDateStr && "" != specifyDateStr) {
@@ -241,10 +290,10 @@ public class PentahoJobExecutor {
 						
 						logTimeCommands.put(logDate, commandLine);
 					}
-				} else if (generateMode.equalsIgnoreCase(MODE_TODAY) || generateMode.equalsIgnoreCase(MODE_YESTERDAY)) {
+				} else if (generateMode.equalsIgnoreCase(MODE_ALL) || generateMode.equalsIgnoreCase(MODE_TODAY) || generateMode.equalsIgnoreCase(MODE_YESTERDAY)) {
 					// use today«s date
 					Date logDate = null;
-					if (generateMode.equalsIgnoreCase(MODE_TODAY)) {
+					if (generateMode.equalsIgnoreCase(MODE_ALL) || generateMode.equalsIgnoreCase(MODE_TODAY)) {
 						logDate = getDAYTODAYLogTime(pdiManager, new Date());
 					} else if (generateMode.equalsIgnoreCase(MODE_YESTERDAY)) {
 						logDate = getYesterday();
@@ -345,7 +394,7 @@ public class PentahoJobExecutor {
 			System.out.println("args[8] log level");
 			System.out.println("args[10] DAY / HOUR to decide what level the log time will be generated");
 			System.out.println("args[9] log file location");
-			System.out.println("args[11] AUTO / TODAY, YESTERDAY to decide the mode of log time generation whether its go to find from records or run for today/yesterday all the missing hours \n");
+			System.out.println("args[11] AUTO / TODAY,YESTERDAY / ALL to decide the mode of log time generation whether its go to find from records or run for today or yesterday all the missing hours; ALL will show all the hours if specified date otherwise will use current date's hours until now \n");
 			System.out.println("args[12] (Optional) Give the date yyyy-MM-dd of which application will go to check in the record table, \n" 
 					+ "\tif DAY is used and AUTO: generate LOG_TIME for that day yyyy_MM_dd\n"
 					+ "\tif DAY is used and TODAY, YESTERDAY: doesn«t matter whether given date is today/yesterday or not, use today yyyy_MM_dd \n"
@@ -428,6 +477,42 @@ public class PentahoJobExecutor {
 	private static Collection<Date> getMissingHOURLogTime(PDIManager pdiManager, Date specifiedDate) {
 		return pdiManager.getMissingLogHoursByDate(specifiedDate);
 
+	}
+	
+	private static Collection<Date> getAllHOURLogTime(PDIManager pdiManager, Date date) {
+		if (date == null) return null;
+
+		DateFormat df1 = new SimpleDateFormat("yyyy-MM-dd");
+		DateFormat df2 = new SimpleDateFormat("HH");
+
+		// 1. Generate all Hours for that date
+		List<java.util.Date> allHours = new LinkedList<java.util.Date> ();
+		Calendar cal = Calendar.getInstance();
+		cal.setTime(date);
+		cal.set(Calendar.HOUR_OF_DAY, 0);
+		cal.set(Calendar.MINUTE, 0);
+		cal.set(Calendar.SECOND, 0);
+		cal.set(Calendar.MILLISECOND, 0);
+
+		java.util.Date today = new java.util.Date();
+		String dayOfDate = df1.format(date);
+		String todayDate = df1.format(today);
+		if (dayOfDate.equalsIgnoreCase(todayDate)) {
+			// If date is today then only the hour that have passed will be counted 
+			int currentHour = Integer.parseInt(df2.format(today));
+			for (int hour = 0; hour < currentHour; hour ++) {
+				cal.set(Calendar.HOUR_OF_DAY, hour);
+				allHours.add(cal.getTime());
+			}
+		} else {
+			// date is not today so then need 0-23 hours
+			for (int hour = 0; hour < 24; hour ++ ) {
+				cal.set(Calendar.HOUR_OF_DAY, hour);
+				allHours.add(hour, cal.getTime());
+			}
+		}
+		
+		return allHours;
 	}
 
 	/**
